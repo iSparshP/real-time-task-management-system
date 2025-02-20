@@ -91,10 +91,8 @@ func main() {
 	aiHandler := ai.NewHandler(aiService, logger)
 
 	notificationConfig := notification.NotificationConfig{
-		SlackToken:       os.Getenv("SLACK_TOKEN"),
-		SlackChannel:     os.Getenv("SLACK_CHANNEL"),
-		DiscordToken:     os.Getenv("DISCORD_TOKEN"),
-		DiscordChannelID: os.Getenv("DISCORD_CHANNEL_ID"),
+		SlackWebhookURL:   os.Getenv("SLACK_WEBHOOK_URL"),
+		DiscordWebhookURL: os.Getenv("DISCORD_WEBHOOK_URL"),
 		DefaultChannels: []notification.NotificationChannel{
 			notification.ChannelSlack,
 			notification.ChannelDiscord,
@@ -115,44 +113,31 @@ func main() {
 	authService := auth.NewService(db, authConfig)
 	authHandler := auth.NewHandler(authService, logger)
 
-	// API routes
+	// API routes - simplified structure
 	api := router.Group("/api")
 	{
-		// Auth routes
-		authRoutes := api.Group("/auth")
-		{
-			authRoutes.POST("/register", authHandler.Register)
-			authRoutes.POST("/login", authHandler.Login)
-			authRoutes.POST("/refresh", authHandler.RefreshToken)
-		}
+		// Unprotected routes
+		api.POST("/auth/register", authHandler.Register)
+		api.POST("/auth/login", authHandler.Login)
+		api.POST("/auth/refresh", authHandler.RefreshToken)
 
 		// Protected routes
-		protected := api.Group("")
-		protected.Use(auth.AuthMiddleware(authService))
+		api.Use(auth.AuthMiddleware(authService))
 		{
 			// Task routes
-			taskRoutes := protected.Group("/tasks")
-			{
-				taskRoutes.GET("/ws", taskHandler.WebSocket)
-				taskRoutes.POST("/", taskHandler.CreateTask)
-				taskRoutes.GET("/", taskHandler.ListTasks)
-				taskRoutes.GET("/:id", taskHandler.GetTask)
-				taskRoutes.PUT("/:id", taskHandler.UpdateTask)
-				taskRoutes.DELETE("/:id", taskHandler.DeleteTask)
-				taskRoutes.POST("/:id/assign", taskHandler.AssignTask)
-			}
+			api.GET("/tasks/ws", taskHandler.WebSocket)
+			api.POST("/tasks", taskHandler.CreateTask)
+			api.GET("/tasks", taskHandler.ListTasks)
+			api.GET("/tasks/:id", taskHandler.GetTask)
+			api.PUT("/tasks/:id", taskHandler.UpdateTask)
+			api.DELETE("/tasks/:id", taskHandler.DeleteTask)
+			api.POST("/tasks/:id/assign", taskHandler.AssignTask)
 
 			// AI routes
-			aiRoutes := protected.Group("/ai")
-			{
-				aiRoutes.POST("/suggest", aiHandler.GetSuggestions)
-			}
+			api.POST("/ai/suggest", aiHandler.GetSuggestions)
 
 			// Notification routes
-			notificationRoutes := protected.Group("/notifications")
-			{
-				notificationRoutes.POST("/events", notificationHandler.HandleTaskEvent)
-			}
+			api.POST("/notifications/events", notificationHandler.HandleTaskEvent)
 		}
 	}
 

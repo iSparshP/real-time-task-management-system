@@ -1,45 +1,31 @@
 package notification
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
-	"github.com/bwmarrin/discordgo"
-	"github.com/slack-go/slack"
 	"go.uber.org/zap"
 )
 
 type Service struct {
-	config         NotificationConfig
-	logger         *zap.Logger
-	slackClient    *slack.Client
-	discordSession *discordgo.Session
-	wg             sync.WaitGroup
+	config NotificationConfig
+	logger *zap.Logger
+	client *http.Client
+	wg     sync.WaitGroup
 }
 
 func NewService(config NotificationConfig, logger *zap.Logger) (*Service, error) {
-	s := &Service{
+	return &Service{
 		config: config,
 		logger: logger,
-	}
-
-	// Initialize Slack client if configured
-	if config.SlackToken != "" {
-		s.slackClient = slack.New(config.SlackToken)
-	}
-
-	// Initialize Discord session if configured
-	if config.DiscordToken != "" {
-		session, err := discordgo.New("Bot " + config.DiscordToken)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Discord session: %w", err)
-		}
-		s.discordSession = session
-	}
-
-	return s, nil
+		client: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+	}, nil
 }
 
 func (s *Service) SendNotification(event NotificationEvent) {
@@ -72,84 +58,97 @@ func (s *Service) SendNotification(event NotificationEvent) {
 }
 
 func (s *Service) sendSlackNotification(event NotificationEvent) error {
-	if s.slackClient == nil {
-		return fmt.Errorf("slack client not configured")
+	if s.config.SlackWebhookURL == "" {
+		return fmt.Errorf("slack webhook URL not configured")
 	}
 
-	attachment := slack.Attachment{
-		Color: s.getColorForEvent(event),
-		Fields: []slack.AttachmentField{
-			{
-				Title: "Task",
-				Value: event.Task.Title,
-				Short: true,
-			},
-			{
-				Title: "Status",
-				Value: string(event.Task.Status),
-				Short: true,
-			},
-			{
-				Title: "Priority",
-				Value: string(event.Task.Priority),
-				Short: true,
-			},
-			{
-				Title: "Due Date",
-				Value: event.Task.DueDate.Format("2006-01-02"),
-				Short: true,
+	// Create Slack-specific payload
+	blocks := []map[string]interface{}{
+		{
+			"type": "section",
+			"text": map[string]interface{}{
+				"type": "mrkdwn",
+				"text": fmt.Sprintf("*Task Update*\n*Task:* %s\n*Updated by:* %s\n*Status:* %s",
+					event.Task.Title,
+					event.Task.CreatedBy,
+					event.Task.Status),
 			},
 		},
-		Footer: "Task Management System",
-		Ts:     json.Number(fmt.Sprintf("%d", time.Now().Unix())),
+		{
+			"type": "context",
+			"elements": []map[string]interface{}{
+				{
+					"type": "mrkdwn",
+					"text": fmt.Sprintf("Timestamp: %s", time.Now().Format(time.RFC3339)),
+				},
+			},
+		},
 	}
 
-	_, _, err := s.slackClient.PostMessage(
-		s.config.SlackChannel,
-		slack.MsgOptionText(s.getNotificationTitle(event), false),
-		slack.MsgOptionAttachments(attachment),
-	)
-	return err
+	payload := map[string]interface{}{
+		"text":   fmt.Sprintf("Task Update: Task '%s' has been updated.", event.Task.Title),
+		"blocks": blocks,
+	}
+
+	return s.sendWebhookRequest(s.config.SlackWebhookURL, payload)
 }
 
 func (s *Service) sendDiscordNotification(event NotificationEvent) error {
-	if s.discordSession == nil {
-		return fmt.Errorf("discord session not configured")
+	if s.config.DiscordWebhookURL == "" {
+		return fmt.Errorf("discord webhook URL not configured")
 	}
 
-	embed := &discordgo.MessageEmbed{
-		Title: s.getNotificationTitle(event),
-		Color: s.getDiscordColorForEvent(event),
-		Fields: []*discordgo.MessageEmbedField{
+	// Create Discord-specific payload
+	embed := map[string]interface{}{
+		"title":       fmt.Sprintf("Task Update: %s", event.Task.Title),
+		"description": "The task has been updated.",
+		"fields": []map[string]interface{}{
 			{
-				Name:   "Task",
-				Value:  event.Task.Title,
-				Inline: true,
+				"name":   "Updated by",
+				"value":  event.Task.CreatedBy,
+				"inline": true,
 			},
 			{
-				Name:   "Status",
-				Value:  string(event.Task.Status),
-				Inline: true,
-			},
-			{
-				Name:   "Priority",
-				Value:  string(event.Task.Priority),
-				Inline: true,
-			},
-			{
-				Name:   "Due Date",
-				Value:  event.Task.DueDate.Format("2006-01-02"),
-				Inline: true,
+				"name":   "Status",
+				"value":  string(event.Task.Status),
+				"inline": true,
 			},
 		},
-		Timestamp: time.Now().Format(time.RFC3339),
-		Footer: &discordgo.MessageEmbedFooter{
-			Text: "Task Management System",
-		},
+		"timestamp": time.Now().Format(time.RFC3339),
+		"color":     s.getDiscordColorForEvent(event),
 	}
 
-	_, err := s.discordSession.ChannelMessageSendEmbed(s.config.DiscordChannelID, embed)
-	return err
+	payload := map[string]interface{}{
+		"content": "Task Update Notification",
+		"embeds":  []interface{}{embed},
+	}
+
+	return s.sendWebhookRequest(s.config.DiscordWebhookURL, payload)
+}
+
+func (s *Service) sendWebhookRequest(webhookURL string, payload interface{}) error {
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", webhookURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send webhook request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("webhook request failed with status: %d", resp.StatusCode)
+	}
+
+	return nil
 }
 
 func (s *Service) getNotificationTitle(event NotificationEvent) string {
@@ -185,21 +184,18 @@ func (s *Service) getColorForEvent(event NotificationEvent) string {
 func (s *Service) getDiscordColorForEvent(event NotificationEvent) int {
 	switch event.Type {
 	case NotificationTypeTaskCreated:
-		return 0x36a64f // green
+		return 3066993 // Green
 	case NotificationTypeTaskUpdated:
-		return 0x2196f3 // blue
+		return 5814783 // Blue
 	case NotificationTypeTaskDeleted:
-		return 0xf44336 // red
+		return 15158332 // Red
 	case NotificationTypeTaskDue:
-		return 0xff9800 // orange
+		return 16776960 // Yellow
 	default:
-		return 0x9e9e9e // grey
+		return 10197915 // Gray
 	}
 }
 
 func (s *Service) Close() {
 	s.wg.Wait()
-	if s.discordSession != nil {
-		s.discordSession.Close()
-	}
 }
