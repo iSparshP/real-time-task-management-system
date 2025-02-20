@@ -8,10 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/generative-ai-go/genai"
 	"github.com/patrickmn/go-cache"
-	openai "github.com/sashabaranov/go-openai"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
+	"google.golang.org/api/option"
 )
 
 var (
@@ -23,7 +24,8 @@ var (
 )
 
 type Service struct {
-	client      *openai.Client
+	client      *genai.Client
+	model       *genai.GenerativeModel
 	config      AIProviderConfig
 	logger      *zap.Logger
 	cache       *cache.Cache
@@ -32,16 +34,26 @@ type Service struct {
 	retryDelay  time.Duration
 }
 
-func NewService(config AIProviderConfig, logger *zap.Logger) *Service {
+func NewService(config AIProviderConfig, logger *zap.Logger) (*Service, error) {
+	ctx := context.Background()
+	client, err := genai.NewClient(ctx, option.WithAPIKey(config.APIKey))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Gemini client: %w", err)
+	}
+
+	model := client.GenerativeModel(config.ModelName)
+	model.SetTemperature(config.Temperature)
+
 	return &Service{
-		client:      openai.NewClient(config.APIKey),
+		client:      client,
+		model:       model,
 		config:      config,
 		logger:      logger,
 		cache:       cache.New(5*time.Minute, 10*time.Minute),
 		rateLimiter: rate.NewLimiter(rate.Every(time.Second), 10),
 		maxRetries:  3,
 		retryDelay:  1 * time.Second,
-	}
+	}, nil
 }
 
 func (s *Service) GetSuggestions(req SuggestionRequest) (*SuggestionResponse, error) {
@@ -81,44 +93,34 @@ func (s *Service) GetSuggestions(req SuggestionRequest) (*SuggestionResponse, er
 }
 
 func (s *Service) makeAIRequest(req SuggestionRequest) (*SuggestionResponse, error) {
+	ctx := context.Background()
 	prompt := s.buildPrompt(req)
 
-	resp, err := s.client.CreateChatCompletion(
-		context.Background(),
-		openai.ChatCompletionRequest{
-			Model: s.config.ModelName,
-			Messages: []openai.ChatCompletionMessage{
-				{
-					Role:    openai.ChatMessageRoleSystem,
-					Content: "You are a task management assistant. Provide clear, concise suggestions.",
-				},
-				{
-					Role:    openai.ChatMessageRoleUser,
-					Content: prompt,
-				},
-			},
-			Temperature: s.config.Temperature,
-			MaxTokens:   s.config.MaxTokens,
-		},
-	)
-
+	resp, err := s.model.GenerateContent(ctx, genai.Text(prompt))
 	if err != nil {
-		if strings.Contains(err.Error(), "429") {
-			if strings.Contains(err.Error(), "quota") {
-				return nil, ErrQuota
-			}
+		if strings.Contains(err.Error(), "quota") {
+			return nil, ErrQuota
+		}
+		if strings.Contains(err.Error(), "rate") {
 			return nil, ErrRateLimit
 		}
 		return nil, err
 	}
 
-	if len(resp.Choices) == 0 {
+	if len(resp.Candidates) == 0 {
 		return nil, ErrInvalidResponse
 	}
 
-	suggestion := resp.Choices[0].Message.Content
+	// Get text from the response
+	suggestion := ""
+	if textPart, ok := resp.Candidates[0].Content.Parts[0].(genai.Text); ok {
+		suggestion = string(textPart)
+	} else {
+		return nil, ErrInvalidResponse
+	}
+
 	confidence := 1.0
-	if resp.Choices[0].FinishReason == "length" {
+	if resp.Candidates[0].FinishReason == genai.FinishReasonMaxTokens {
 		confidence = 0.0
 	}
 

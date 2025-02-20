@@ -84,7 +84,10 @@ func main() {
 		MaxTokens:   150,
 		Temperature: 0.7,
 	}
-	aiService := ai.NewService(aiConfig, logger)
+	aiService, err := ai.NewService(aiConfig, logger)
+	if err != nil {
+		logger.Fatal("Failed to initialize AI service", zap.Error(err))
+	}
 	aiHandler := ai.NewHandler(aiService, logger)
 
 	notificationConfig := notification.NotificationConfig{
