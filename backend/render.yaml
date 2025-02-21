@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: task-management-system
+    env: docker
+    buildCommand: docker build -t task-management-system .
+    startCommand: docker run -p $PORT:8080 task-management-system
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: JWT_SECRET
+        sync: false
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_PROVIDER
+        value: gemini
+      - key: AI_MODEL_NAME
+        value: gemini-pro
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_SSLMODE
+        value: require
+      - key: SLACK_WEBHOOK_URL
+        sync: false
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      - key: GIN_MODE
+        value: release
