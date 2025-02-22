@@ -182,12 +182,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 👥 Authors
 
-- **Sparsh Patwa** - [iSparshP](https://github.com/iSparshP)
+- **Sparsh Prakash** - [iSparshP](https://github.com/iSparshP)
 
 ## 🙏 Acknowledgments
 
 - Go community for excellent libraries and tools
-- Contributors who help improve this project
 
 ## 📞 Support
 
